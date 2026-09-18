@@ -138,7 +138,7 @@ def _scrambled_source_info(task_type: str, source_info):
     }
 
 
-def _scrambled_copy(record: dict) -> dict:
+def scrambled_copy(record: dict) -> dict:
     scrambled = {}
     for key, value in record.items():
         if key in TEXT_A_KEYS:
@@ -152,7 +152,7 @@ def _scrambled_copy(record: dict) -> dict:
 
 def assert_no_leak(record: dict) -> None:
     original = build_inputs(record)
-    scrambled = build_inputs(_scrambled_copy(record))
+    scrambled = build_inputs(scrambled_copy(record))
     if original["source"] == scrambled["source"]:
         raise AssertionError(
             "scrambling left the source unchanged, so this check would pass for free"
