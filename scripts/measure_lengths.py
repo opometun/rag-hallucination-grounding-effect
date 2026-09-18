@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from src.config  import MAX_LENGTH
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -15,7 +16,7 @@ from src.data.inputs import build_inputs
 from src.data.load import load_joined
 
 MODEL = "answerdotai/ModernBERT-base"
-PRIMARY_CAP = 4096
+PRIMARY_CAP = MAX_LENGTH
 LARGER_CAP = 8192
 FAMILIES = ("QA", "Summary", "Data2txt")
 DROP_QUALITY = ("incorrect_refusal", "truncated")
