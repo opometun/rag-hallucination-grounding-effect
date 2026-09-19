@@ -4,6 +4,7 @@ Importable with no side effects. Predictions and F1 come from src.metrics, never
 second definition in here.
 """
 
+import argparse
 import contextlib
 import json
 import math
@@ -342,3 +343,124 @@ def run_training(config, train_records, val_records, tokenizer, test_records=Non
         test_scores=test_scores,
         history=history,
     )
+
+
+def _resolve_device(name, precision):
+    if name == "auto":
+        if torch.cuda.is_available():
+            name = "cuda"
+        elif torch.backends.mps.is_available():
+            name = "mps"
+        else:
+            name = "cpu"
+    if precision == "auto":
+        precision = "bf16" if name == "cuda" else "fp32"
+    return name, precision
+
+
+def _stratified_head(records, limit):
+    # Round robin over (task family, label) so a capped smoke run still has both classes
+    # and all three families in it.
+    if limit is None or limit >= len(records):
+        return records
+    buckets = {}
+    for r in records:
+        buckets.setdefault((r["task_type"], r["label"]), []).append(r)
+    keys = sorted(buckets)
+    picked = []
+    i = 0
+    while len(picked) < limit and any(buckets[k] for k in keys):
+        bucket = buckets[keys[i % len(keys)]]
+        if bucket:
+            picked.append(bucket.pop(0))
+        i += 1
+    return picked
+
+
+def main():
+    parser = argparse.ArgumentParser(description="one run: one condition, one seed")
+    parser.add_argument("--model-dir", required=True,
+                        help="local ModernBERT-base folder, not a hub name")
+    parser.add_argument("--data-dir", required=True,
+                        help="folder holding response.jsonl and source_info.jsonl")
+    parser.add_argument("--condition", required=True, choices=["A", "B"])
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--lr", type=float, required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--final", action="store_true")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="cap records per fold, smoke tests only")
+    parser.add_argument("--device", default="auto",
+                        choices=["auto", "cuda", "mps", "cpu"])
+    parser.add_argument("--precision", default="auto",
+                        choices=["auto", "fp32", "bf16"])
+    args = parser.parse_args()
+
+    from transformers import AutoTokenizer
+
+    from src.data.labels import label_records
+    from src.data.load import load_joined
+    from src.data.splits import assert_disjoint, assign_split, load_val_split
+
+    model_dir = Path(args.model_dir).expanduser().resolve()
+    if not (model_dir / "config.json").exists():
+        raise SystemExit(f"no config.json under {model_dir}, expected a local model folder")
+
+    split_file = Path(__file__).resolve().parents[1] / "splits" / "val_source_ids.json"
+    if not split_file.exists():
+        raise SystemExit(
+            f"frozen split missing at {split_file}. Refusing to draw a new one, since a "
+            f"redraw would train on a different split than the one already validated."
+        )
+
+    device, precision = _resolve_device(args.device, args.precision)
+    seed_everything(args.seed)
+
+    records = label_records(load_joined(args.data_dir).to_dict("records"))
+    val_ids = load_val_split(split_file)
+    assigned = assign_split(records, val_ids)
+    assert_disjoint(records, val_ids)
+
+    folds = {"train": [], "val": [], "test": []}
+    for r in assigned:
+        folds[r["fold"]].append(r)
+    for fold, fold_records in folds.items():
+        folds[fold] = _stratified_head(fold_records, args.limit)
+
+    out = Path(args.out).expanduser().resolve()
+    stem = f"{args.condition}_seed{args.seed}"
+    config = TrainConfig(
+        condition=args.condition,
+        seed=args.seed,
+        learning_rate=args.lr,
+        checkpoint_path=out / f"{stem}_best.pt",
+        val_logits_path=out / f"{stem}_val_logits.jsonl",
+        test_logits_path=out / f"{stem}_test_logits.jsonl" if args.final else None,
+        model_name=str(model_dir),
+        device=device,
+        precision=precision,
+        is_final_run=args.final,
+    )
+
+    print(f"condition {args.condition} seed {args.seed} lr {args.lr} device {device} "
+          f"precision {precision} max_length {config.max_length}")
+    print(f"train {len(folds['train']):,} val {len(folds['val']):,} "
+          f"test {len(folds['test']):,}")
+
+    tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+    result = run_training(
+        config,
+        folds["train"],
+        folds["val"],
+        tokenizer,
+        test_records=folds["test"] if args.final else None,
+    )
+
+    print(f"done condition {result.condition} seed {result.seed} "
+          f"best epoch {result.best_epoch} val macro f1 {result.best_val_macro_f1:.4f} "
+          f"steps {result.optimizer_steps} checkpoint {result.checkpoint_path} "
+          f"val logits {result.val_logits_path}")
+
+
+if __name__ == "__main__":
+    main()
