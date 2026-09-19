@@ -461,6 +461,22 @@ def main():
           f"steps {result.optimizer_steps} checkpoint {result.checkpoint_path} "
           f"val logits {result.val_logits_path}")
 
+    # Last write of the run, so its presence means everything above finished.
+    with (out / f"{stem}_result.json").open("w") as fh:
+        json.dump({
+            "condition": result.condition,
+            "seed": result.seed,
+            "learning_rate": config.learning_rate,
+            "max_length": config.max_length,
+            "best_epoch": result.best_epoch,
+            "best_val_macro_f1": result.best_val_macro_f1,
+            "best_val_scores": result.best_val_scores,
+            "epochs_run": result.epochs_run,
+            "optimizer_steps": result.optimizer_steps,
+            "checkpoint_path": result.checkpoint_path,
+            "val_logits_path": result.val_logits_path,
+        }, fh, indent=2)
+
 
 if __name__ == "__main__":
     main()
