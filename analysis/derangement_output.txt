@@ -1,0 +1,42 @@
+device mps, fp32, max_length 4096
+test records 2,675
+  derangement: 450 sources permuted, 0 fixed points, families preserved
+  token ids: all 2675 B inputs differ after substitution, all A inputs unchanged
+      1000 Summary   true  1045 tokens, deranged  1247 tokens, first differing position 167
+     10002 Data2txt  true   757 tokens, deranged   965 tokens, first differing position 173
+     10003 Data2txt  true   878 tokens, deranged  1086 tokens, first differing position 294
+originally clean responses 1,732
+
+B_seed42: true source rerun positive F1 0.7094, saved 0.7102, difference 0.0008
+  prediction agreement with the saved logits 0.9970, 857s
+
+B_seed1337: true source rerun positive F1 0.7069, saved 0.7084, difference 0.0015
+  prediction agreement with the saved logits 0.9978, 898s
+
+B_seed2026: true source rerun positive F1 0.7163, saved 0.7136, difference 0.0027
+  prediction agreement with the saved logits 0.9970, 961s
+
+originally clean responses, per model
+model       scope             n  pos true  pos deranged     flip
+B_seed42    overall       1,732    0.1184        0.9723   0.8597
+B_seed42    QA              715    0.1077        0.9566   0.8629
+B_seed42    Summary         696    0.0718        1.0000   0.9282
+B_seed42    Data2txt        321    0.2430        0.9470   0.7040
+B_seed1337  overall       1,732    0.1663        0.9850   0.8187
+B_seed1337  QA              715    0.0993        0.9720   0.8727
+B_seed1337  Summary         696    0.1207        1.0000   0.8793
+B_seed1337  Data2txt        321    0.4143        0.9813   0.5670
+B_seed2026  overall       1,732    0.2027        0.9931   0.7904
+B_seed2026  QA              715    0.1776        0.9874   0.8098
+B_seed2026  Summary         696    0.1379        0.9986   0.8606
+B_seed2026  Data2txt        321    0.3988        0.9938   0.5950
+
+originally clean responses, mean over the three models
+scope             n  pos true  pos deranged     flip    shift
+overall       1,732    0.1624        0.9834   0.8229  +0.8210
+QA              715    0.1282        0.9720   0.8485  +0.8438
+Summary         696    0.1102        0.9995   0.8894  +0.8894
+Data2txt        321    0.3520        0.9740   0.6220  +0.6220
+
+a higher predicted positive rate under a wrong source means B is sensitive to
+source substitution, not that its verification is correct
