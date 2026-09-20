@@ -111,11 +111,14 @@ def main():
 
     print()
     print("test set, aggregated over the three seeds")
-    print(f"{'condition':12}{'metric':14}{'mean':>10}{'min':>10}{'max':>10}")
+    print(f"{'condition':12}{'metric':20}{'mean':>10}{'min':>10}{'max':>10}")
     for condition in CONDITIONS:
-        for metric in ("positive_f1", "macro_f1"):
+        # Same per-run values the table above printed; score_file already returns
+        # precision and recall alongside the two F1 figures.
+        for metric in ("positive_precision", "positive_recall",
+                       "positive_f1", "macro_f1"):
             values = [test[(condition, seed)][metric] for seed in SEEDS]
-            print(f"{condition:12}{metric:14}{sum(values) / len(values):>10.4f}"
+            print(f"{condition:12}{metric:20}{sum(values) / len(values):>10.4f}"
                   f"{min(values):>10.4f}{max(values):>10.4f}")
 
     print()
