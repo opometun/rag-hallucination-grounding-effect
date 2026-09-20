@@ -1,8 +1,5 @@
-# Pinned from the local macOS environment (.venv, Python 3.12.11).
-# The cluster runs Linux with CUDA and may resolve different builds, in particular for
-# torch, so treat these versions as provisional and re-pin them from the cluster venv
-# before final submission.
 numpy==2.5.3
+scikit-learn==1.9.1
 pandas==3.0.6
 torch==2.14.0
 transformers==5.17.0
