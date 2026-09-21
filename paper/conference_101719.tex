@@ -9,22 +9,48 @@
 \usepackage{xcolor}
 \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
     T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+% ---------------------------------------------------------------
+% Values marked TODO are not confirmed. Fill from your own outputs.
+% ---------------------------------------------------------------
+\newcommand{\NTrain}{12{,}705}      % train responses after val holdout
+\newcommand{\NVal}{2{,}237}        % val responses
+\newcommand{\NValSrc}{377}     % val source IDs (15% of train sources)
+\newcommand{\GridSeed}{7}    % dev-grid seed: my notes conflict (7 vs 42), check run_all.sbatch
+\newcommand{\GPU}{A100}         % GPU model on hpc3
+\newcommand{\LenFeature}{characters}  % unit of the length feature in baselines.py (tokens, words, chars)
+
+% ---------------------------------------------------------------
+% Every value I could not confirm prints as ?? in bold.
+% Fill each \tbd from your script output, never from memory.
+% ---------------------------------------------------------------
+\newcommand{\tbd}{\textbf{??}}
+
 \begin{document}
 
 \title{Grounding Improves Response-Level Hallucination Detection Unevenly Across Task Families: A ModernBERT Input Ablation on RAGTruth}
 
 \author{\IEEEauthorblockN{Oleksandr Pometun}
 \IEEEauthorblockA{\textit{Institute of Cognitive Science} \\
-\textit{Universitat Osnabrueck}\\
+\textit{University of Osnabrueck}\\
 Osnabrueck, Germany \\
-% TODO: email or ORCID
-}
+opometun@uni-osnabrueck.de}
 }
 
 \maketitle
 
 \begin{abstract}
-% TODO: write abstract last, ~120 words.
+Hallucination detectors on RAGTruth use the retrieved source, but how much
+their performance depends on it has not been measured. We fine-tune
+ModernBERT-base for response-level detection with and without the source.
+Backbone, data, training and selection are identical, with three seeds per
+condition. Adding the source raises positive-class $F_1$ from 0.671 to 0.711,
+a mean gain of 0.040, concentrated in summarization and question answering and
+absent in data-to-text. Logistic regression on task family, response length and
+generator identity reaches 0.700, above the blind detector, so RAGTruth's
+response-level labels are predictable to a considerable degree from metadata
+alone. Grounding
+helps, but this test set limits what blind performance can show.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -33,14 +59,285 @@ hallucination detection, retrieval-augmented generation, ModernBERT, RAGTruth, i
 
 \section{Introduction}
 
+Retrieval-augmented generation gives a language model retrieved documents, 
+allowing it to base its answers on evidence from them\cite{lewis2020rag}. 
+However, the generator may produce statements not supported by the retrieved text, 
+and these hallucinations can be hard to detect because they sound convincing \cite{ji2023survey}.
+A RAG system in production often requires a detector that monitors and
+flags unsupported responses. This detector should be cheap enough to
+be used on every generated response.
+
+RAGTruth \cite{niu2024ragtruth} contains roughly 18k responses from six generators
+across three task categories (question answering, summarization and data-to-text),
+with hallucinated text passages labeled at the span level. On this dataset,
+encoder detectors compete with much larger language models. LettuceDetect
+\cite{kovacs2025lettucedetect} fine-tunes ModernBERT
+\cite{warner2024modernbert}, a BERT-style encoder \cite{devlin2019bert}
+supporting an 8{,}192-token context, for token classification across source,
+question and answer. Its large version achieves an example-level F1 of 79.22\%,
+while its base version, using the same ModernBERT-base backbone as ours,
+achieves 76.07\%.
+
+Although all these detectors use the source, previous work has not measured how
+much their performance relies on it instead of patterns in the response related
+to task, length and generator style. Natural language inference demonstrates the
+same risk: models that receive only the hypothesis, without the premise, perform
+above chance by using annotation cues
+\cite{gururangan2018annotation,poliak2018hypothesis}. For hallucination detection,
+a source-blind detector serves as the equivalent baseline.
+
+We adapt the ModernBERT-on-RAGTruth configuration from
+\cite{kovacs2025lettucedetect} for response-level classification and evaluate it
+using a controlled change to the input. Condition~A receives the task
+instruction and response, whereas Condition~B additionally receives the
+retrieved source. We investigate (i)~the performance
+gain from adding the source, (ii)~how this gain varies across task families, and
+(iii)~how Condition~A performs against baselines based on task family, response
+length and generator identity. Because published results use different setups,
+we treat them only as reference points, with Condition~A as our experimental
+baseline.
+
 \section{Methods}
+
+\subsection{Data and Labels}
+We follow the official RAGTruth split and remove the same 173 quality-flagged
+responses from both conditions (144 incorrect refusals and 29 truncated
+responses). The resulting dataset contains 17{,}617 responses, including
+2{,}675 in the test set. RAGTruth has no validation split, so we use 15\% of the training source IDs
+(\NValSrc{} sources) for validation while preserving the task-family
+distribution. This produces \NTrain{} training responses and \NVal{} validation
+responses. A source can have up to six responses, one from each generator, so
+we split by source instead of response to keep all responses from a source in
+the same partition. The code checks that source IDs do not overlap. We use the same split for all
+conditions, configurations and seeds. A response is hallucinated if it has at
+least one annotated span, $y=\mathbf{1}[\,|S(r)|\ge 1\,]$, where $S(r)$ is the
+set of annotated hallucination spans of response $r$.
+Unsupported content counts as hallucinated even when factually true (RAGTruth's
+\texttt{implicit\_true} spans are kept). Positive prevalence is about 0.45 in
+training and validation and 0.35 in test.
+
+\subsection{Inputs}
+Let $t$ denote the fixed instruction for each task family, including the
+question for question answering; let $r$ denote the response and $s$ the source
+text (\texttt{source\_info}). Each leaf in a structured source is 
+written as one \texttt{key: value} line.
+The input segments are then joined in the following order:
+\begin{align}
+x_A &= \texttt{[CLS]}\; t\; r\; \texttt{[SEP]}, \label{eq:xa}\\
+x_B &= \texttt{[CLS]}\; t\; r\; \texttt{[SEP]}\; s\; \texttt{[SEP]}. \label{eq:xb}
+\end{align}
+We build $x_A$ without the source, and an automated check confirms that changing
+the source alters every $x_B$ and no $x_A$. We limit sequences to
+$T_{\max}=4096$ tokens and allow only $s$ to be truncated. Because the longest
+input contains 2{,}632 tokens, no input is truncated in either condition.
+
+\subsection{Model}
+We use ModernBERT-base (22 layers and hidden size $d=768$) as the encoder
+$f_\theta$ \cite{warner2024modernbert}. Its context window can hold every source
+in full, unlike a 512-token encoder. Given an input of $T$ tokens and an
+attention mask $m\in\{0,1\}^T$, let $M=\sum_{i=1}^{T} m_i$ be the number of real
+(non-padding) tokens. Then
+\begin{align}
+H &= f_\theta(x) \in \mathbb{R}^{T\times d}, \label{eq:enc}\\
+\bar{h} &= \frac{1}{M}\sum_{i=1}^{T} m_i H_i \in \mathbb{R}^{d}, \label{eq:pool}\\
+z &= W\bar{h} + b, \qquad W\in\mathbb{R}^{2\times d},\; b\in\mathbb{R}^{2}. \label{eq:head}
+\end{align}
+Our head is a single newly initialized linear layer with no dropout,
+not the stock ModernBERT classification head. The prediction is positive (hallucinated) when
+$z_1 \ge z_0$, with ties assigned to the positive class.
+
+\subsection{Training and Selection}
+We fine-tune all parameters using a custom PyTorch loop that minimizes
+cross-entropy loss over a batch of $N$ examples,
+\begin{equation}
+\mathcal{L} = -\frac{1}{N}\sum_{n=1}^{N} \log p_{n,y_n},
+\qquad p_n = \mathrm{softmax}(z_n),
+\label{eq:loss}
+\end{equation}
+using AdamW \cite{loshchilov2019adamw} with weight decay 0.01 (none on bias and
+normalization parameters), gradient-norm clipping at 1.0 
+and gradient accumulation to achieve an effective batch size of 16. 
+The learning rate increases linearly for the first 10\% of update steps and
+then decreases linearly to zero. Training runs for at most
+six epochs. Validation macro-F1 is computed after every epoch, training stops
+after two epochs without improvement, and the best checkpoint is restored.
+
+The maximum learning rate $\eta$ is the only hyperparameter we tune. Using seed
+\GridSeed{} and validation data only, we compare $10^{-5}$, as used by
+\cite{kovacs2025lettucedetect}, with $3\times10^{-5}$ under both conditions. We
+select $\eta=3\times10^{-5}$ because it gives the higher mean validation
+macro-F1 across A and B (0.758 versus 0.746). We then fix this configuration for
+six final runs: three seeds for each condition, all run on one \GPU{} GPU of the
+university HPC cluster. The
+seeds determine the classifier-head initialization and data order. 
+We use them to measure training variation, not as statistical pairs.
+The backbone, examples, data split, optimizer, schedule and selection rule are
+the same for both conditions. Only the input length and, because of early
+stopping, the selected epoch necessarily differ. We use the test set only to
+evaluate the six final checkpoints.
+
+\subsection{Evaluation and Diagnostics}
+The primary metric is positive-class F1, $F_1^{+}=2PR/(P+R)$, with precision
+$P$ and recall $R$ of the hallucinated class computed over the whole test set.
+We also report macro-F1, the mean of $F_1^{+}$ and the clean-class $F_1^{-}$,
+and the per-seed gain $\Delta = F_{1,B}^{+}-F_{1,A}^{+}$. All scores use the
+rule $z_1 \ge z_0$ above; threshold-free analysis is left to future work.
+
+We use three reference baselines to place Condition~A in context. 
+If a fraction $p$ of responses are hallucinated, always predicting
+hallucinated gives $F_1^{+}=2p/(1+p)$; a real model can still score below this.
+ The second baseline predicts the majority
+class for each task family, using the training labels to determine that class.
+The third trains logistic regression on the training and validation data using
+one-hot task family and response length (\LenFeature{}) as features.
+An additional version also includes generator identity, a dataset
+attribute that may be unavailable to a deployed detector. These baselines show
+how much of Condition~A's score these features could explain, but they do not
+prove what the model has learned.
+
+To see whether Condition~B uses the source, we test its three trained models
+again on a modified test set. Within each task family, every response receives
+the source of another response, never its own. We use the same fixed
+reassignment for all three models. Only the source changes, the instruction and
+response remain the same. For responses that were originally clean, we report
+the predicted-positive rate before and after the swap and the fraction of
+predictions that change.
 
 \section{Results and Discussion}
 
+All scores are on the 2{,}675 test responses (943 hallucinated, prevalence
+0.353). Table~\ref{tab:systems} compares the systems and
+Table~\ref{tab:family} breaks the comparison down by task family.
+
+\begin{table}[t]
+\caption{Test results. P, R and $F_1^{+}$ refer to the hallucinated class.
+A and B are means over three seeds. Mean $F_1^{+}$ is averaged over runs, not
+recomputed from mean P and R. $q_+$ is the predicted-positive rate among the 1{,}732 originally clean
+responses. $F_1^{+}$ seed ranges are [0.667, 0.675] for A and [0.708, 0.714]
+for B.}
+\label{tab:systems}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccccc}
+\hline
+System & P & R & $F_1^{+}$ & Macro-$F_1$ & $q_+$ \\
+\hline
+Always positive            & 0.353 & 1.000 & 0.521 & 0.261 & 1.00 \\
+Majority per family        & 0.643 & 0.614 & 0.628 & 0.716 & 0.19 \\
+Metadata (family, length)$^{\mathrm{a}}$ & 0.640 & 0.616 & 0.628 & 0.715 & 0.19 \\
+A: source-blind            & 0.671 & 0.670 & 0.671 & 0.746 & 0.18 \\
+B: grounded                & 0.710 & 0.715 & 0.711 & 0.776 & 0.16 \\
+B, substituted source$^{\mathrm{b}}$ & -- & -- & -- & -- & 0.98 \\
+\hline
+\multicolumn{6}{l}{$^{\mathrm{a}}$Adding generator identity as a feature gives $F_1^{+}=0.700$.}\\
+\multicolumn{6}{l}{$^{\mathrm{b}}$Source-substitution diagnostic; only $q_+$ is reported.}
+\end{tabular}
+\end{table}
+% NOTE: if you prefer, replace the P/R/F1/Macro cells of the last row with
+% dashes. The FPR cell is the readout that matters there.
+
+\begin{table}[t]
+\caption{Task-family breakdown (means over three seeds). $n$ and prevalence
+are shared by A and B. Flip is the share of B's predictions on clean responses
+that change under source substitution.}
+\label{tab:family}
+\centering
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
+\hline
+Family & $n$ & Prev. & A $F_1^{+}$ & B $F_1^{+}$ & $\Delta$ & Flip \\
+\hline
+Summary   & 900 & 0.227 & 0.198 & 0.414 & $+0.217$ & 0.89 \\
+QA        & 875 & 0.183 & 0.456 & 0.567 & $+0.111$ & 0.85 \\
+Data2txt  & 900 & 0.643 & 0.850 & 0.840 & $-0.009$ & 0.62 \\
+\hline
+\end{tabular}
+\end{table}
+
+\textit{How large is the gain?} Supplying the source raises $F_1^{+}$ from
+0.671 to 0.711 (Table~\ref{tab:systems}). The per-seed gains are $+0.035$,
+$+0.041$ and $+0.044$ (mean $+0.040$), and the seed ranges of A and B do not
+overlap on $F_1^{+}$ or on macro-$F_1$. With three runs per condition this
+shows a consistent direction, not a powered estimate of the effect size.
+% TODO (one sentence, needs your P and R): say whether B gains through
+% precision, recall or both, e.g. "The gain comes mainly through ...".
+
+\textit{Where is the gain concentrated?} The overall result hides large
+differences across task families (Table~\ref{tab:family}). For summarization,
+Condition~A scores $F_1^{+}=0.198$, below the always-positive reference for that
+family (0.370), and one A run collapses to 0.028. Condition~B reaches 0.414,
+with per-seed gains of 0.11, 0.11 and 0.43. The gain is $+0.111$ for question answering, whereas
+the source provides no improvement for data-to-text ($-0.009$). We consider two
+possible explanations for this pattern, but the current experiments cannot
+distinguish between them. First, a summary must be compared with its article.
+From the response alone, a fluent summary of another article appears equally
+valid. In contrast, data-to-text responses contain surface cues that the blind
+detector may exploit. Second, hallucination prevalence varies across task
+families. The high prevalence in data-to-text increases positive-class $F_1$
+for any detector biased toward positive predictions. Condition~A's macro-$F_1$
+of 0.772 for this family shows that it still distinguishes between the classes.
+However, summarization scores remain low even for Condition~B (0.414). One
+possible reason is our pooling method. When source tokens dominate the input,
+mean pooling may weaken the signal from a short unsupported span. A token-level
+objective, as used by \cite{kovacs2025lettucedetect}, may be more suitable for
+such cases.
+
+\textit{How much of Condition~A can metadata baselines explain?} Logistic
+regression using task family and response length achieves
+$F_1^{+}=0.628$. This equals the majority-per-family rule: the regression
+predicts the positive class for all data-to-text responses and almost no others,
+so response length adds nothing beyond task family.
+Condition~A scores only slightly higher at 0.671, while both
+outperform the always-positive baseline of 0.521. Adding generator identity
+raises the metadata baseline to 0.700, above Condition~A. This weakens what
+detector performance on this test set can tell us about unseen generators. We therefore make no transfer claims for
+either condition.
+
+\textit{Does Condition~B use the source?} The paired comparison shows the effect of adding the source, but not how
+Condition~B uses it. The source-substitution test provides further evidence.
+When we pair each test response with another source from the same task family, the
+predicted-positive rate across the 1{,}732 clean responses increases from 0.16
+to 0.98. In addition, 82\% of their predictions change, with consistent results
+across all three Condition~B models. Condition~B is therefore highly sensitive
+to the source it receives. However, the substituted pairs were not relabeled,
+so this diagnostic cannot measure correctness. After substitution the predicted-positive rate on
+originally clean responses is at least 0.97 in every family, so the lower flip
+rate on data-to-text (0.62) only reflects its higher starting rate. The
+near-complete change points to a broad mismatch signal more than claim-level
+checking.
+
+\textit{Optimization and overfitting.} By validation macro-$F_1$, early stopping
+selected epochs 3, 3 and 1 for Condition~A: it reached its best validation score
+early, and further epochs brought no improvement. Condition~B selected epochs 4,
+6 and 5, all three hitting the six-epoch cap and one peaking in the final epoch,
+so it may not have fully converged and the reported gain holds for this training
+budget.
+
+\textit{Limitations and trade-offs.} Both conditions share one learning rate,
+selected on the mean validation score of A and B. This is a fairness choice,
+and B's longer inputs might prefer a different value. Three seeds per condition
+give direction, not power. The cues available to A are tied to this dataset's
+generators and tasks. Finally, grounding has a cost: B's inputs are much longer
+than A's (mean 797 against 183 tokens),
+so the gain of 0.040 is bought with a corresponding increase in inference
+compute.
+
 \section{Conclusion}
 
+Supplying the source raises $F_1^{+}$ from 0.671 to 0.711 (mean 0.040), with
+gains in summarization and question answering and none in data-to-text.
+Condition~A modestly exceeds a family-and-length baseline and falls below its
+generator-aware version, so we make no transfer claims. Source substitution
+shows sensitivity to source-response mismatch, not correct verification, and
+grounding also requires much longer inputs (mean 797 against 183 tokens).
+Threshold-free evaluation, a source-level bootstrap and a token-level objective
+are the next steps.
+
+\section*{Acknowledgment}
+Funded by the Deutsche Forschungsgemeinschaft (DFG, German Research Foundation) -- 456666331.
+
 \bibliographystyle{IEEEtran}
-\nocite{*}   % TEMP: renders all bib entries so the skeleton compiles; remove once real \cite commands exist
 \bibliography{refs}
 
 \end{document}
